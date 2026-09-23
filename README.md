@@ -2,6 +2,8 @@
 
 A native SwiftUI Mac app with an ARM64 local HomeKit helper. Built for a Smart Thermostat Essential; actual capability detection is performed after pairing. The bundled app requires macOS 26 or later on Apple Silicon because of its included Python runtime. This is an independent personal-use prototype, not an ecobee product.
 
+![Screenshot](<image.png>)
+
 ## Connect
 
 1. Open **Ecobee Local.app**. Keep your Mac and thermostat on the same home network.

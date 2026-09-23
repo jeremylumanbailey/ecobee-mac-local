@@ -1,0 +1,82 @@
+# Swift Package Manager and local build products (keep Package.resolved).
+.build/
+.swiftpm/
+.build-app/
+/build/
+/dist/
+DerivedData/
+*.app/
+*.dSYM/
+*.xcarchive/
+*.ipa
+*.dmg
+
+# Xcode user state; shared project configuration remains versioned.
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Local editor settings can contain environment variables and debugging secrets.
+.vscode/
+.idea/
+
+# Python environments, bytecode, test and analysis caches.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Generated PyInstaller specs and icon render intermediates.
+/*.spec
+*.iconset/
+
+# Local secrets and optional debug exports. Do not ignore source JSON or lockfiles.
+.env
+.env.*
+!.env.example
+!.env.*.example
+secrets/
+.secrets/
+pairings/
+pairing*.json
+homekit-pairing*.json
+credentials*.json
+.netrc
+.pypirc
+.envrc
+*.key
+*.pem
+*.p8
+*.p12
+*.pfx
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
+
+# Local device dumps and network captures may reveal pairing or home-network data.
+/diagnostics/
+/captures/
+/exports/
+*.har
+*.pcap
+*.pcapng
+
+# Logs, editor temporary files and macOS metadata.
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+._*
+.AppleDouble/

@@ -16,6 +16,8 @@ import LocalCore
             CommandGroup(after: .newItem) {
                 Button("Refresh Thermostat") { Task { await model.refresh() } }
                     .keyboardShortcut("r").disabled(model.busy || model.snapshot == nil)
+                Button("Inspect Fan Timer Capabilities…") { Task { await model.inspectFanTimer() } }
+                    .disabled(model.busy || !model.connected || model.demo)
             }
         }
         MenuBarExtra {

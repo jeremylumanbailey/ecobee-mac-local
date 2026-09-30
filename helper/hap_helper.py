@@ -9,6 +9,7 @@ import math
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 BASE = "-0000-1000-8000-0026BB765291"
 def uuid(short):
@@ -71,6 +72,86 @@ def parse_accessories(accessories):
                 if occupancy in (0, 1):
                     sensor["occupied"] = bool(occupancy)
     return {"name": root_name, "model": model, "firmware": firmware, "thermostats": thermostats, "sensors": sensors}
+
+# Inspection only: these UUIDs are deliberately NOT in WRITABLE.
+TIMER_INSPECTION_TYPES = {
+    "holdEnd": "1621F556-1367-443C-AF19-82AF018E99DE",
+    "setHoldSchedule": "1B300BC2-CFFC-47FF-89F9-BD6CCF5F2853",
+    "currentComfort": "B7DDB9A3-54BB-4572-91D2-F1F5B0510F8C",
+    "fanRequested": TYPES["fan"],
+    "fanReadback": "48F62AEC-4171-4B4A-8F0E-1EEB6708B3FB",
+    "fanState": "AF", "fanTarget": "BF",
+    "setDuration": "D3", "remainingDuration": "D4",
+    "mode": "33", "state": "0F", "target": "35", "heat": "12", "cool": "0D",
+}
+
+def inspect_fan_timer(accessories):
+    """Return an allowlisted, read-only report; never export raw accessory data or keys."""
+    snapshot = parse_accessories(accessories)
+    services = []
+    for accessory in accessories:
+        for service in accessory.get("services", []):
+            if uuid(service["type"]) not in {uuid("4A"), uuid("40"), uuid("B7")}:
+                continue
+            fields = {}
+            for name, kind in TIMER_INSPECTION_TYPES.items():
+                char = by_type(service, kind)
+                if char is None:
+                    fields[name] = {"present": False}
+                    continue
+                entry = {"present": True, "iid": char["iid"], "type": uuid(kind),
+                         "format": char.get("format"), "perms": char.get("perms", [])}
+                status = char.get("status", 0)
+                if status:
+                    entry["status"] = status
+                elif "pr" in char.get("perms", []):
+                    value = char.get("value")
+                    if name == "holdEnd":
+                        if isinstance(value, str) and re.fullmatch(r"[0-9TQZ:+.\-]{1,64}", value):
+                            entry["value"] = value
+                    elif numeric(value):
+                        entry["value"] = value
+                fields[name] = entry
+            services.append({"aid": accessory["aid"], "serviceIID": service["iid"], "fields": fields})
+    return {"model": snapshot["model"], "firmware": snapshot["firmware"], "services": services}
+
+def prepare_fan_deadline_trial(accessories, expected_end, now=None):
+    """Bounded investigation only: shorten an existing native fan hold with HVAC off."""
+    report = inspect_fan_timer(accessories)
+    if report["model"] != "ECB701" or report["firmware"] != "4.10.40048":
+        raise ValueError("This trial is limited to the Essential firmware inspected during development.")
+    services = report["services"]
+    if len(services) != 1:
+        raise ValueError("This trial requires exactly one thermostat/fan service.")
+    service = services[0]; fields = service["fields"]
+    required = {"mode": 0, "state": 0, "currentComfort": 3, "fanRequested": 100,
+                "fanReadback": 100, "fanTarget": 0, "fanState": 2}
+    if any(fields[key].get("value") != value for key, value in required.items()):
+        raise ValueError("Start a native fan-only hold with heating/cooling Off before this trial.")
+    field = fields["holdEnd"]
+    raw = field.get("value")
+    if not isinstance(raw, str) or raw != expected_end or "pw" not in field.get("perms", []):
+        raise ValueError("The hold changed or its deadline cannot be written. Inspect it again first.")
+    suffix = raw[-1:] if raw[-1:] in ("T", "Q") else ""
+    try:
+        end = datetime.fromisoformat(raw[:-1] if suffix else raw)
+    except ValueError:
+        raise ValueError("The thermostat deadline format is not supported for this trial.") from None
+    if end.utcoffset() is None:
+        raise ValueError("The thermostat did not supply a timezone offset for this trial.")
+    now = now or datetime.now(timezone.utc)
+    seconds_left = (end - now).total_seconds()
+    if not 180 <= seconds_left <= 6 * 3600:
+        raise ValueError("The native fan hold must have between 3 minutes and 6 hours remaining.")
+    new_end = (now.astimezone(end.tzinfo) + timedelta(minutes=2)).replace(microsecond=0)
+    # Essential 4.10.40048 shifts offset-bearing writes by four hours in live testing.
+    # Send thermostat-local wall time without offset/suffix, matching HA PR 130736.
+    value = new_end.strftime("%Y-%m-%dT%H:%M:%S")
+    expected_readback = new_end.isoformat(timespec="seconds") + suffix
+    baseline = {key: fields[key].get("value") for key in ("mode", "state", "heat", "cool", "target")}
+    if any(not numeric(value) for value in baseline.values()):
+        raise ValueError("Current climate settings must be readable before the trial.")
+    return [(service["aid"], field["iid"], value)], expected_readback, baseline
 
 def validate_writes(snapshot, thermostat_id, changes):
     """Resolve addresses from a fresh accessory inventory, never trust client-provided IIDs."""
@@ -202,6 +283,30 @@ class Bridge:
             return {"snapshot": await self.snapshot()}
         if command == "refresh":
             return {"snapshot": await self.snapshot()}
+        if command == "inspect_fan_timer":
+            if self.pairing is None:
+                raise ValueError("Reconnect before inspecting timer capabilities.")
+            accessories = await self.pairing.list_accessories_and_characteristics()
+            return {"diagnostics": inspect_fan_timer(accessories)}
+        if command == "test_fan_deadline":
+            if self.pairing is None:
+                raise ValueError("Reconnect before testing a fan deadline.")
+            accessories = await self.pairing.list_accessories_and_characteristics()
+            writes, deadline, baseline = prepare_fan_deadline_trial(accessories, request.get("expectedEnd"))
+            results = await self.pairing.put_characteristics(writes)
+            if any(r.get("status", 0) != 0 for r in results.values()):
+                raise ValueError("The deadline write was rejected. Check the native fan hold before trying again.")
+            try:
+                # /accessories can briefly echo the write before firmware normalizes it.
+                await asyncio.sleep(4)
+                report = inspect_fan_timer(await self.pairing.list_accessories_and_characteristics())
+                fields = report["services"][0]["fields"]
+                confirmed = fields["holdEnd"].get("value") == deadline
+                climate_unchanged = all(fields[key].get("value") == value for key, value in baseline.items())
+                return {"diagnostics": report, "deadline": deadline,
+                        "deadlineConfirmed": confirmed, "climateUnchanged": climate_unchanged}
+            except Exception:
+                return {"deadline": deadline, "deadlineConfirmed": False, "climateUnchanged": False}
         if command == "write":
             snapshot = await self.snapshot()
             writes = validate_writes(snapshot, request.get("thermostatID"), request.get("changes"))
@@ -245,7 +350,7 @@ def safe_error(error, command):
         message = "The thermostat could not be reached. Check the same local network and macOS Local Network permission."
     else:
         message = f"Local connection failed ({name}). Retry discovery or reconnect."
-    if command == "write":
+    if command in {"write", "test_fan_deadline"}:
         message += " A change may have reached the thermostat. Refresh before trying again."
     return message
 

@@ -18,9 +18,10 @@ No iPhone, Apple TV, HomePod, Apple Home setup, paid developer account, or Home 
 
 - Current temperature, humidity, HVAC mode and operating state.
 - System indicator to the left of the temperature: blue snowflake for active cooling, red flame for active heating, gray matching icon when idle, and OFF when the HVAC mode is off. Automatic mode shows the active operation or both gray icons while idle. Disconnected or unavailable status shows a dash. Draft mode edits do not affect this indicator until accepted by the thermostat.
-- Fan indicator beside the indoor temperature: FAN RUNNING spins while HomeKit Current Fan State is active, and FAN OFF remains still when inactive or idle. Unavailable/disconnected readings show FAN UNKNOWN. Status follows the existing 20-second refresh; Reduce Motion keeps the icon still.
+- Fan indicator beside the indoor temperature: FAN RUNNING spins while HomeKit Current Fan State is active, and FAN OFF remains still when inactive or idle. Unavailable/disconnected readings show FAN UNKNOWN. Status normally refreshes every 20 seconds; after Run fan or Stop / Auto, read-only checks run every two seconds for up to 30 seconds. Immediate “Starting fan…” or “Stopping fan…” feedback stays visible until fresh readings confirm the requested mode and actual fan operation, or the app explains that operation is continuing or unconfirmed. The opposite action remains available between reads; a new command replaces the previous feedback. Failed writes are never retried automatically; Reduce Motion keeps the icon still.
 - Heat, cool and automatic-mode temperature controls, with capability/range validation.
-- Fan and resume-schedule controls appear only when matching writable Ecobee characteristics are exposed. Their availability on firmware 4.10.4.48 requires a live check.
+- Fan controls offer 15, 30, or 45 minutes, 1 or 2 hours, or On until stopped. **Stop / Auto** ends a manual fan run; the thermostat may still run the fan for heating, cooling, or its configured minimum hourly runtime. This app does not change that minimum hourly setting. Fan and resume-schedule controls appear only when matching writable Ecobee characteristics are exposed.
+- Fan timers are managed by this Mac, not programmed into the thermostat. Keep the app open and the Mac awake on the home network. A pending deadline is saved in app preferences and resumed after restart; an overdue timer waits for reconnection. An attempted Auto command with an uncertain result requires manually choosing Stop / Auto again. Changing a timer replaces the previous deadline. Resume schedule does not cancel the saved fan deadline.
 - Additional temperature/occupancy sensors appear when exposed by the thermostat.
 - Fahrenheit/Celsius display, menu-bar reading, automatic local refresh every 20 seconds, reconnect after connection loss, and an isolated demo mode.
 - Temperature edits require clicking Apply changes. Failed or timed-out writes are not automatically retried.
@@ -28,13 +29,17 @@ No iPhone, Apple TV, HomePod, Apple Home setup, paid developer account, or Home 
 - Works while the Mac is awake and the app is running. The thermostat continues its own schedule while the app is closed or the Mac sleeps.
 - One paired thermostat per app installation; all thermostat services and sensors exposed by it can be displayed.
 
+## Inspecting thermostat-side timers
+
+Use **File → Inspect Fan Timer Capabilities…** while connected to read the thermostat’s fan controls, Ecobee hold deadline, and standard duration capabilities. Read again can compare these values before/after a fan hold set on the thermostat or official app. This inspection sends no setting changes and exports no pairing credentials, serial numbers, network addresses, or room names. A writable hold deadline is only a candidate: it can also govern climate holds, so its presence does not prove independent fan timing. Normal fan controls still use Mac-managed timers. The inspection sheet also includes an explicitly labeled experimental two-minute deadline trial, restricted to the inspected Essential firmware, an already-running native fan hold with 3 minutes–6 hours left, HVAC Off/Idle, and no Mac timer. It changes only the existing hold deadline and checks readback; this is a development test, not verified general fan scheduling.
+
 ## Troubleshooting
 
 If discovery is empty, check the local network permission, matching home network, guest/client isolation, VPN routing, and the thermostat’s HomeKit setup screen. A thermostat paired with another HomeKit controller is shown as already paired; do not reset it unless you intend to remove that existing integration.
 
 For pairing errors, start discovery again and generate a fresh code on the thermostat. Keep the app open if Keychain saving fails and use Retry saving pairing. Removing pairing contacts the thermostat before deleting local keys; it requires the thermostat to be reachable.
 
-Pairing data is stored in a non-synchronizing, device-only Keychain item (`local.ecobee.mac.homekit.v1`). The Python helper receives keys over private process pipes, holds them in memory, and writes no pairing files. No cloud service, analytics, or local web server is used. Rebuilding an ad-hoc-signed app can cause macOS to request Keychain access again.
+Pairing data is stored in a non-synchronizing, device-only Keychain item (`local.ecobee.mac.homekit.v1`). The Python helper receives keys over private process pipes, holds them in memory, and writes no pairing files. A pending fan timer stores its deadline and accessory/service identifiers in local app preferences, without pairing keys. No cloud service, analytics, or local web server is used. Rebuilding an ad-hoc-signed app can cause macOS to request Keychain access again.
 
 ## Build and test
 

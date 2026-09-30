@@ -57,6 +57,31 @@ struct ContentView: View {
         .background(canvas)
         .preferredColorScheme(.dark)
         .tint(mint)
+        .sheet(isPresented: $model.showTimerDiagnostics) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Fan timer capabilities").font(.title2.bold())
+                Text("Read-only inspection. A writable hold deadline does not confirm support for a fan-only timer. Read again does not change settings. The experimental test button changes the existing fan-hold deadline.")
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
+                if let message = model.timerTrialMessage {
+                    Text(message).font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ScrollView {
+                    Text(model.timerDiagnostics ?? "No report available.")
+                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button("Read again") { Task { await model.inspectFanTimer() } }
+                        .disabled(model.busy || !model.connected)
+                    Button("Test 2-minute thermostat timer") { Task { await model.testFanDeadline() } }
+                        .disabled(model.busy || !model.connected || model.fanRun != nil)
+                        .help("Experimental: shortens an existing native fan-only hold. Requires heating/cooling Off. No Mac timer is created.")
+                    Spacer()
+                    Button("Done") { model.showTimerDiagnostics = false }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(24).frame(width: 700, height: 600)
+        }
         .alert("Remove this Mac’s pairing?", isPresented: $confirmUnpair) {
             Button("Cancel", role: .cancel) {}
             Button("Remove pairing", role: .destructive) { Task { await model.unpair() } }
@@ -267,12 +292,6 @@ private struct ThermostatCard: View {
                     Button("Resume schedule") { Task { await model.write(["resume": true], thermostat: thermostat) }; edited = false }
                         .disabled(!canControl)
                 }
-                if thermostat.fields["fan"] != nil {
-                    Menu("Fan") {
-                        Button("Auto") { Task { await model.write(["fan": 0], thermostat: thermostat) } }
-                        Button("On") { Task { await model.write(["fan": 100], thermostat: thermostat) } }
-                    }.disabled(!canControl)
-                }
                 Spacer()
                 if edited { Button("Discard") { sync() }.disabled(model.busy) }
                 Button("Apply changes") { apply() }
@@ -281,6 +300,10 @@ private struct ThermostatCard: View {
             Text("Temperature changes create a hold. Its duration follows your thermostat’s settings. Controls shown depend on what your Ecobee exposes locally.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if thermostat.fields["fan"] != nil {
+                Divider()
+                FanControlsView(thermostat: thermostat, canControl: canControl)
+            }
         }.card()
         .onAppear { sync() }
         .onChange(of: model.lastUpdated) { _, _ in if !edited { sync() } }
@@ -325,6 +348,75 @@ private struct ThermostatCard: View {
             await model.write(changes, thermostat: thermostat)
             if model.error == nil { edited = false; sync() }
         }
+    }
+}
+
+private struct FanControlsView: View {
+    @EnvironmentObject var model: AppModel
+    let thermostat: LocalThermostat
+    let canControl: Bool
+    @State<FanRunDuration> private var duration = .fifteen
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Fan control", systemImage: "fanblades").font(.headline)
+            HStack(spacing: 12) {
+                Picker("Run for", selection: $duration) {
+                    ForEach(FanRunDuration.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }.frame(maxWidth: 260)
+                Button("Run fan") {
+                    Task { await model.setFan(on: true, duration: duration, thermostat: thermostat) }
+                }.buttonStyle(.borderedProminent)
+                    .disabled(model.fanFeedback?.isPending == true && model.fanFeedback?.action == .start)
+                Spacer()
+                Button("Stop / Auto") {
+                    Task { await model.setFan(on: false, thermostat: thermostat) }
+                }.disabled(model.fanFeedback?.isPending == true && model.fanFeedback?.action == .stop)
+            }.disabled(!canControl)
+            if let feedback = model.fanFeedback, feedback.thermostatID == thermostat.id {
+                HStack(spacing: 8) {
+                    if feedback.isPending {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Waiting for fan status")
+                    } else {
+                        Image(systemName: feedback.phase == .confirmed ? "checkmark.circle" : "info.circle")
+                    }
+                    Text(feedback.message)
+                }
+                .font(.callout)
+                .foregroundStyle(feedback.phase == .confirmed ? mint : Color.secondary)
+            }
+            if let run = model.fanRun, run.thermostatID == thermostat.id {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    VStack(alignment: .leading, spacing: 5) {
+                        if run.returnAttempted {
+                            Text(model.busy ? "Returning fan to Auto…" : "Return to Auto could not be confirmed. Use Stop / Auto to try again.")
+                                .foregroundStyle(.orange)
+                        } else if context.date >= run.endsAt {
+                            Text("Timer ended — waiting for a connection and available controls.")
+                                .foregroundStyle(.orange)
+                        } else {
+                            HStack(spacing: 4) {
+                                Text("Return to Auto in")
+                                Text(run.endsAt, style: .timer).monospacedDigit().fixedSize()
+                                Text("· \(run.endsAt.formatted(date: .omitted, time: .shortened))")
+                            }.foregroundStyle(mint)
+                        }
+                        if !run.startConfirmed {
+                            Text("Fan On could not be confirmed. The return-to-Auto timer is still saved.")
+                                .foregroundStyle(.orange)
+                        }
+                    }.font(.callout)
+                }
+            }
+            Text("Stop / Auto ends a manual fan run. Heating, cooling, or the thermostat’s minimum hourly runtime may still run the fan.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Timed runs need this app open and your Mac awake on the home network. If interrupted, returning to Auto waits until the app reconnects.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

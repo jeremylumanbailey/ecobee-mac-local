@@ -8,10 +8,12 @@ import LocalCore
     private var services: [NetService] = []
     private var devices: [String: DiscoveredDevice] = [:]
     private var completion: CheckedContinuation<[DiscoveredDevice], Error>?
+    private var soughtDeviceID: String?
     private var timer: Task<Void, Never>?
 
-    func discover() async throws -> [DiscoveredDevice] {
+    func discover(matching deviceID: String? = nil) async throws -> [DiscoveredDevice] {
         guard completion == nil else { throw AppFailure("Discovery is already running.") }
+        soughtDeviceID = deviceID?.lowercased()
         devices = [:]; services = []
         return try await withCheckedThrowingContinuation { continuation in
             completion = continuation
@@ -55,6 +57,7 @@ import LocalCore
             "featureFlags": Int(field("ff")) ?? 0, "configNumber": Int(field("c#")) ?? 1]
         if let data = try? JSONSerialization.data(withJSONObject: object), let device = try? JSONDecoder().decode(DiscoveredDevice.self, from: data) {
             devices[device.id] = device
+            if device.id == soughtDeviceID { finish() }
         }
     }
     private func finish(error: Error? = nil) {

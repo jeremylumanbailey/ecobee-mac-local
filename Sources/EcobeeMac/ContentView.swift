@@ -7,6 +7,7 @@ private let panel = Color(red: 0.12, green: 0.15, blue: 0.13)
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State<Bool> private var confirmUnpair = false
     var body: some View {
         HStack(spacing: 0) {
@@ -26,15 +27,17 @@ struct ContentView: View {
                         Button("Retry saving pairing to Keychain") { model.retrySave() }
                             .buttonStyle(.borderedProminent).tint(.orange)
                     }
+                    if model.isConnecting || (model.snapshot != nil && !model.demo && !model.connected) {
+                        connectionStatus
+                    }
                     if let snapshot = model.snapshot {
-                        if !model.demo && !model.connected {
-                            banner("Showing last known readings. Reconnect to control your thermostat.", icon: "wifi.slash", color: .orange)
-                        }
                         if snapshot.thermostats.isEmpty {
                             banner("Pairing succeeded, but this device exposes no thermostat service.", icon: "thermometer", color: .orange)
                         }
                         ForEach(snapshot.thermostats) { thermostat in
                             ThermostatCard(thermostat: thermostat)
+                                .opacity(model.connected || model.demo ? 1 : 0.5)
+                                .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: model.connected)
                         }
                         if !snapshot.sensors.isEmpty { sensorSection(snapshot.sensors) }
                         HStack {
@@ -42,6 +45,9 @@ struct ContentView: View {
                             Spacer()
                             Text("Firmware \(snapshot.firmware)")
                         }.font(.caption).foregroundStyle(.secondary)
+                    } else if model.isConnecting {
+                        // The connection card above is the startup screen until a cache or live data is available.
+                        EmptyView()
                     } else if model.paired {
                         VStack(alignment: .leading, spacing: 16) {
                             Image(systemName: "wifi.exclamationmark").font(.largeTitle).foregroundStyle(mint)
@@ -133,13 +139,13 @@ struct ContentView: View {
                 if let updated = model.lastUpdated {
                     HStack(spacing: 5) {
                         Circle().fill(model.connected || model.demo ? mint : .orange).frame(width: 5, height: 5)
-                        Text(model.demo ? "Sample home" : model.connected ? "Local connection" : "Disconnected")
-                        Text("· Checked \(updated.formatted(date: .omitted, time: .shortened))")
+                        Text(model.demo ? "Sample home" : model.connected ? "Local connection" : model.isConnecting ? "Connecting…" : "Disconnected")
+                        Text("· \(model.connected || model.demo ? "Checked" : "Last updated") \(updated.formatted(date: model.connected || model.demo ? .omitted : .abbreviated, time: .shortened))")
                     }.font(.caption).foregroundStyle(.secondary)
                 } else { Text("Your thermostat, one click away.").foregroundStyle(.secondary) }
             }
             Spacer()
-            if model.busy { ProgressView().controlSize(.small).padding(.top, 10).accessibilityLabel("Working") }
+            if model.busy && !model.isConnecting { ProgressView().controlSize(.small).padding(.top, 10).accessibilityLabel("Working") }
             if model.snapshot != nil {
                 Button {
                     Task { if model.connected || model.demo { await model.refresh() } else { await model.reconnect() } }
@@ -147,6 +153,32 @@ struct ContentView: View {
                     .help("Refresh thermostat").accessibilityLabel("Refresh thermostat").disabled(model.busy)
             }
         }
+    }
+    private var connectionStatus: some View {
+        HStack(spacing: 16) {
+            Image(systemName: model.isConnecting ? "wifi" : "wifi.slash")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(model.isConnecting ? mint : .orange)
+                .symbolEffect(.pulse, options: .repeating, isActive: model.isConnecting && !reduceMotion)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(model.isConnecting ? "Connecting to your Ecobee…" : "Thermostat is offline")
+                    .font(.headline)
+                Text(model.connectionStage ?? "Reconnect when your thermostat is reachable on the local network.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text(model.snapshot == nil
+                     ? "Your controls will appear once fresh readings arrive."
+                     : "Last known readings are dimmed. Controls unlock when fresh readings arrive.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if model.isConnecting && !reduceMotion {
+                ProgressView().controlSize(.small).accessibilityLabel("Connecting to thermostat")
+            } else if !model.isConnecting {
+                Button("Reconnect") { Task { await model.reconnect() } }.disabled(model.busy)
+            }
+        }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+            .background(mint.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
     }
     private func banner(_ text: String, icon: String, color: Color) -> some View {
         Label { Text(text).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: icon) }
@@ -161,13 +193,13 @@ struct ContentView: View {
                     Image(systemName: "sensor.fill").foregroundStyle(mint)
                     VStack(alignment: .leading) {
                         Text(sensor.name)
-                        if let occupied = sensor.occupied { Text(occupied ? "Occupancy detected" : "No occupancy detected").font(.caption).foregroundStyle(.secondary) }
+                        if model.connected || model.demo, let occupied = sensor.occupied { Text(occupied ? "Occupancy detected" : "No occupancy detected").font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer()
                     Text(model.unit.text(sensor.temperature)).font(.title3.monospacedDigit())
                 }
             }
-        }.card()
+        }.card().opacity(model.connected || model.demo ? 1 : 0.5)
     }
 }
 
@@ -249,7 +281,7 @@ private struct ThermostatCard: View {
             HStack {
                 Text(thermostat.name).font(.headline)
                 Spacer()
-                Label(thermostat.stateName, systemImage: thermostat.state == 1 ? "flame.fill" : thermostat.state == 2 ? "snowflake" : "leaf")
+                Label(model.connected || model.demo ? thermostat.stateName : "Last known readings", systemImage: model.connected || model.demo ? (thermostat.state == 1 ? "flame.fill" : thermostat.state == 2 ? "snowflake" : "leaf") : "clock")
                     .font(.caption.weight(.medium)).foregroundStyle(mint)
             }
             HStack(alignment: .top, spacing: 16) {
@@ -260,7 +292,7 @@ private struct ThermostatCard: View {
                 Text(model.unit.text(thermostat.current))
                     .font(.system(size: 82, weight: .light, design: .rounded)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.75)
-                    .accessibilityLabel("Indoor temperature \(model.unit.text(thermostat.current)) \(model.unit.symbol)")
+                    .accessibilityLabel("\(model.connected || model.demo ? "Indoor temperature" : "Last known indoor temperature") \(model.unit.text(thermostat.current)) \(model.unit.symbol)")
                 HStack(spacing: 16) {
                     if let humidity = thermostat.humidity {
                         Label("\(Int(humidity))% humidity", systemImage: "humidity").foregroundStyle(.secondary)
@@ -307,6 +339,9 @@ private struct ThermostatCard: View {
         }.card()
         .onAppear { sync() }
         .onChange(of: model.lastUpdated) { _, _ in if !edited { sync() } }
+        .onChange(of: model.connected) { _, connected in
+            if connected { sync() } else { edited = false }
+        }
     }
     private func temperatureControl(_ title: String, field: String, value: Binding<Double>, color: Color) -> some View {
         VStack(spacing: 12) {

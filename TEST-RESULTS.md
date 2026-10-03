@@ -97,3 +97,20 @@ The bundled Python runtime has a macOS 26 minimum deployment version; the app's 
 - The next observation confirmed “Fan is running.” with a checkmark, FAN RUNNING, and the saved return-to-Auto countdown. No heating/cooling mode or temperature command was sent.
 - Clicked Stop / Auto after confirming startup. Verified “Auto selected. Fan is off.”, FAN OFF, unchanged HVAC Off/Idle, and removal of the countdown. No test fan run or Mac timer remains active.
 - This verifies live device-reported operation and the visible startup transition; physical airflow was not independently measured.
+
+## DMG testing release (September 30, 2026)
+
+- Verified GitHub origin main/HEAD as `3edebe680a0d63606eddba2d19e3db42b0c6aa78`, matching the clean local checkout. Exported that exact Git tree and rebuilt both app and helper from source in an isolated build directory, using the existing pinned Python build environment.
+- 66 Swift checks and 33 Python tests passed against the exported source. ARM64 release build and strict ad-hoc signature verification passed.
+- Added scripts/build-dmg.sh for repeatable DMG packaging with the app, Applications shortcut, installation instructions, and SHA-256 checksum. Existing output files are refused instead of overwritten.
+- Created Ecobee-Local-0.1.0-arm64.dmg (19.7 MiB), requiring Apple Silicon and macOS 26+. Verified the disk image checksum, mounted it read-only, checked its contents, Applications symlink, bundle version/minimum OS, both executable architectures, code signature, and bundled third-party licenses. The standalone helper answered its hello handshake from the mounted image without external Python configuration. Detached the image after validation. No thermostat command or pairing was used.
+- No usable Developer ID signing identity was available. This is an explicitly labeled ad-hoc-signed testing build, not notarized; normal Gatekeeper acceptance on another Mac is not claimed. No GitHub release was published.
+
+## Cached startup and connection transition (October 3, 2026)
+
+- Added a single versioned local snapshot tied to the saved pairing identity. Restores original reading timestamps and display/control layout while remaining disconnected; excludes sensor occupancy. Corrupt, oversized, unsupported-version, mismatched, empty, future-dated, or more-than-seven-day-old caches are rejected. Removing pairing removes the cache.
+- Startup/reconnection displays a connection card with progress text and a subtle Wi-Fi pulse; Reduce Motion uses a static indicator. Last-known cards are dimmed, timestamps include their date, current fan/HVAC operation remains unknown, and all thermostat controls remain disabled until fresh authenticated data arrives. Fresh connection data resets cached control drafts. Menu-bar text explicitly shows Connecting or Offline rather than presenting a cached temperature as live.
+- Saved-thermostat Bonjour discovery now returns immediately when the matching accessory resolves; first-time discovery retains its seven-second scan window. This removes an unconditional delay without bypassing HomeKit authentication. No Wi-Fi history or SSID access was added.
+- 79 Swift checks passed, including 13 new cache checks. ARM64 release build and strict ad-hoc signature verification passed; unchanged helper reused. Previous installed app preserved in work/Ecobee Local-before-startup-cache.app.
+- Initial updated build reconnected successfully, saved a version-1 snapshot with thermostat data and no occupancy values, and retained the existing fan run with the same end time. No thermostat-setting commands were sent. Connection completed before the UI observer captured an intermediate startup frame, so that observation does not independently verify the dimmed animation.
+- Final build (including fresh-data draft reset) installed and signature verified. Its relaunch is currently waiting for macOS Keychain approval; SecurityAgent was active and the protected prompt requires user input. Final relaunch confirmation is pending.

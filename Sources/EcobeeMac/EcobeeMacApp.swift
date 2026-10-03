@@ -23,7 +23,7 @@ import LocalCore
         MenuBarExtra {
             MenuPanel().environmentObject(model)
         } label: {
-            Label(model.snapshot?.thermostats.first.map { (model.demo ? "Demo " : "") + model.unit.text($0.current) } ?? "Ecobee", systemImage: "thermometer.medium")
+            Label(model.connected || model.demo ? (model.snapshot?.thermostats.first.map { (model.demo ? "Demo " : "") + model.unit.text($0.current) } ?? "Ecobee") : (model.isConnecting ? "Connecting…" : "Ecobee Offline"), systemImage: "thermometer.medium")
         }
     }
 }
@@ -35,7 +35,7 @@ struct MenuPanel: View {
         if let thermostat = model.snapshot?.thermostats.first {
             Text("\(model.demo ? "Demo · " : "")\(model.snapshot?.name ?? "Ecobee")")
             Text("\(model.unit.text(thermostat.current)) · \(thermostat.modeName)")
-            if !model.demo && !model.connected { Text("Disconnected · last known reading") }
+            if !model.demo && !model.connected { Text(model.isConnecting ? "Connecting · last known reading" : "Disconnected · last known reading") }
         } else { Text("Ecobee Local") }
         Divider()
         Button("Open Thermostat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }

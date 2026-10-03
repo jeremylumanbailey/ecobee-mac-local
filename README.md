@@ -24,6 +24,7 @@ No iPhone, Apple TV, HomePod, Apple Home setup, paid developer account, or Home 
 - Fan timers are managed by this Mac, not programmed into the thermostat. Keep the app open and the Mac awake on the home network. A pending deadline is saved in app preferences and resumed after restart; an overdue timer waits for reconnection. An attempted Auto command with an uncertain result requires manually choosing Stop / Auto again. Changing a timer replaces the previous deadline. Resume schedule does not cancel the saved fan deadline.
 - Additional temperature/occupancy sensors appear when exposed by the thermostat.
 - Fahrenheit/Celsius display, menu-bar reading, automatic local refresh every 20 seconds, reconnect after connection loss, and an isolated demo mode.
+- Startup restores one last-known screen for the saved pairing, with dimmed readings, their original date/time, and an animated connection card. Controls remain disabled until authenticated fresh readings arrive. Offline operation shows a reconnect action. Saved-thermostat discovery proceeds as soon as a matching Bonjour result resolves instead of always waiting seven seconds; initial pairing discovery still scans the full window. Reduce Motion uses a static connection indicator.
 - Temperature edits require clicking Apply changes. Failed or timed-out writes are not automatically retried.
 - Temperature holds use the thermostat’s own behavior/preferences. Schedule editing, vacations, eco+ configuration, remote cloud control and historical charts are not implemented.
 - Works while the Mac is awake and the app is running. The thermostat continues its own schedule while the app is closed or the Mac sleeps.
@@ -39,7 +40,7 @@ If discovery is empty, check the local network permission, matching home network
 
 For pairing errors, start discovery again and generate a fresh code on the thermostat. Keep the app open if Keychain saving fails and use Retry saving pairing. Removing pairing contacts the thermostat before deleting local keys; it requires the thermostat to be reachable.
 
-Pairing data is stored in a non-synchronizing, device-only Keychain item (`local.ecobee.mac.homekit.v1`). The Python helper receives keys over private process pipes, holds them in memory, and writes no pairing files. A pending fan timer stores its deadline and accessory/service identifiers in local app preferences, without pairing keys. No cloud service, analytics, or local web server is used. Rebuilding an ad-hoc-signed app can cause macOS to request Keychain access again.
+Pairing data is stored in a non-synchronizing, device-only Keychain item (`local.ecobee.mac.homekit.v1`). The Python helper receives keys over private process pipes, holds them in memory, and writes no pairing files. A pending fan timer stores its deadline and accessory/service identifiers in local app preferences, without pairing keys. One startup snapshot is also stored in local preferences, tied to the pairing identity and overwritten on successful reads; it contains display readings and control metadata but no pairing keys, network history, or sensor occupancy history. It is discarded at startup if more than seven days old, invalid, or mismatched, and removed when pairing is removed. A cached screen never establishes connectivity or authorizes commands. No cloud service, analytics, or local web server is used. Rebuilding an ad-hoc-signed app can cause macOS to request Keychain access again.
 
 ## Build and test
 
@@ -58,6 +59,18 @@ Run these commands from the repository root. The build produces `dist/Ecobee Loc
 The Swift checks are a standalone executable so they also run with Command Line Tools, which do not include XCTest. `ECOBEE_BUILD_ROOT`, `ECOBEE_BUILD_PYTHON`, and `ECOBEE_APP_OUTPUT` can customize build paths. The build prefers the installed macOS 26.5 SDK; `ECOBEE_SDK` overrides it. This avoids a missing SwiftUI macro plugin in the installed macOS 27 Command Line Tools. For `swift run EcobeeMac`, set `ECOBEE_HELPER_PYTHON` and `ECOBEE_HELPER_SCRIPT` to absolute paths for the helper runtime and source file.
 
 This build is locally ad-hoc signed, not notarized for public distribution. Developer ID signing/notarization is separate from HomeKit pairing and is not needed for the local build workflow.
+
+## Build a downloadable DMG
+
+```sh
+bash scripts/build-dmg.sh
+```
+
+This rebuilds the standalone ARM64 app, packages it with an Applications shortcut and installation instructions, verifies the compressed disk image, and writes `dist/Ecobee-Local-0.1.0-arm64.dmg` plus a `.sha256` checksum. The version comes from `Info.plist`. The current bundled runtime requires **macOS 26 or later and Apple Silicon (M1 or later)**. Recipients do not need Python or developer tools.
+
+To package a previously verified bundle without rebuilding, set `ECOBEE_DMG_APP` to its path. `ECOBEE_DMG_OUTPUT` overrides the output filename; existing output files are never overwritten. The script currently produces an **ad-hoc-signed testing build** and labels it accordingly. It does not sign with Developer ID, notarize, publish a GitHub release, or include local pairing data.
+
+A DMG is an installation container; it does not establish developer trust. For a public download that opens under normal Gatekeeper checks, configure a Developer ID Application certificate, sign the application and nested helper/runtime code appropriately, submit to Apple's notary service, and staple the accepted ticket before distributing. See [Apple's distribution guidance](https://developer.apple.com/macos/distribution/). Keep signing keys and notarization credentials outside the repository.
 
 ## Sources
 

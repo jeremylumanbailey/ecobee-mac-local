@@ -15,6 +15,8 @@ import LocalCore
     @Published var hasUnsavedPairing = false
     @Published var didSearch = false
     @Published var connected = false
+    @Published private(set) var connectionStage: String? = "Preparing your thermostat…"
+    var isConnecting: Bool { connectionStage != nil }
     @Published var timerTrialMessage: String?
     private var inspectedHoldEnd: String?
     @Published var timerDiagnostics: String?
@@ -31,6 +33,7 @@ import LocalCore
     private var started = false
     private var pollTask: Task<Void, Never>?
     private var fanTimerTask: Task<Void, Never>?
+    private let snapshotCacheKey = "lastHomeSnapshot.v1"
     private let fanRunKey = "localFanRun.v1"
     private var accessoryID: String? {
         if demo { return "demo" }
@@ -42,15 +45,20 @@ import LocalCore
 
     func start() async {
         guard !started else { return }; started = true
+        defer { connectionStage = nil }
         if ProcessInfo.processInfo.arguments.contains("--demo") { showDemo() }
         else {
             do {
+                connectionStage = "Loading saved pairing…"
                 pairingData = try store.load()
                 paired = pairingData != nil
                 if let data = UserDefaults.standard.data(forKey: fanRunKey),
                    let saved = try? JSONDecoder().decode(FanRun.self, from: data),
                    saved.accessoryID == accessoryID { fanRun = saved }
-                if paired { await reconnect() }
+                if paired {
+                    restoreSnapshot()
+                    await reconnect()
+                } else { UserDefaults.standard.removeObject(forKey: snapshotCacheKey) }
             } catch { self.error = error.localizedDescription }
         }
         pollTask = Task { [weak self] in
@@ -116,9 +124,12 @@ import LocalCore
         await perform {
             guard let pairingData else { throw AppFailure("No saved pairing is available.") }
             connected = false
+            connectionStage = "Finding your thermostat on the local network…"
+            defer { connectionStage = nil }
             let pairing = try JSONSerialization.jsonObject(with: pairingData) as? [String: Any] ?? [:]
             let deviceID = (pairing["AccessoryPairingID"] as? String)?.lowercased()
-            let nearby = try await discovery.discover()
+            let nearby = try await discovery.discover(matching: deviceID)
+            connectionStage = "Establishing a secure connection…"
             var arguments: [String: Any] = ["pairing": pairing]
             if let device = nearby.first(where: { $0.id == deviceID }) {
                 arguments["endpoint"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(device))
@@ -301,12 +312,14 @@ import LocalCore
             try store.delete()
             helper.stop(); pairingData = nil; paired = false; connected = false
             fanFeedback = nil
+            UserDefaults.standard.removeObject(forKey: snapshotCacheKey)
             snapshot = nil; lastUpdated = nil; devices = []; didSearch = false
             notice = "Pairing removed from the thermostat and this Mac."
         }
     }
     func showDemo() {
         guard !busy, !paired else { return }
+        connectionStage = nil
         demo = true; connected = false; error = nil; notice = nil
         snapshot = PreviewData.snapshot; lastUpdated = Date()
     }
@@ -319,6 +332,21 @@ import LocalCore
         snapshot = try decode(HomeSnapshot.self, value)
         lastUpdated = Date(); connected = true
         updateFanFeedbackReading()
+        if !demo, !hasUnsavedPairing, let accessoryID, let snapshot, let lastUpdated,
+           let data = try? JSONEncoder().encode(CachedHomeSnapshot(snapshot: snapshot, accessoryID: accessoryID, savedAt: lastUpdated)),
+           data.count <= 512_000 {
+            UserDefaults.standard.set(data, forKey: snapshotCacheKey)
+        }
+    }
+    private func restoreSnapshot() {
+        guard let accessoryID, let data = UserDefaults.standard.data(forKey: snapshotCacheKey) else { return }
+        guard let cached = CachedHomeSnapshot.restore(data, accessoryID: accessoryID) else {
+            UserDefaults.standard.removeObject(forKey: snapshotCacheKey); return
+        }
+        snapshot = cached.snapshot
+        lastUpdated = cached.savedAt
+        // Cached capabilities and readings never enable controls or claim current operation.
+        connected = false
     }
     private func decode<T: Decodable>(_ type: T.Type, _ value: Any) throws -> T {
         try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value))

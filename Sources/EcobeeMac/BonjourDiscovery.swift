@@ -3,7 +3,7 @@ import Darwin
 import LocalCore
 
 /// Use mDNSResponder on macOS rather than opening a second multicast stack.
-@MainActor final class BonjourDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
+@MainActor final class BonjourDiscovery: NSObject, ThermostatDiscovering, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
     private var browser: NetServiceBrowser?
     private var services: [NetService] = []
     private var devices: [String: DiscoveredDevice] = [:]
@@ -11,18 +11,25 @@ import LocalCore
     private var soughtDeviceID: String?
     private var timer: Task<Void, Never>?
 
+    private let browserFactory: () -> NetServiceBrowser
+    private let timeout: Duration
+    init(browserFactory: @escaping () -> NetServiceBrowser = { NetServiceBrowser() }, timeout: Duration = .seconds(7)) {
+        self.browserFactory = browserFactory; self.timeout = timeout
+        super.init()
+    }
+
     func discover(matching deviceID: String? = nil) async throws -> [DiscoveredDevice] {
         guard completion == nil else { throw AppFailure("Discovery is already running.") }
         soughtDeviceID = deviceID?.lowercased()
         devices = [:]; services = []
         return try await withCheckedThrowingContinuation { continuation in
             completion = continuation
-            let browser = NetServiceBrowser()
+            let browser = browserFactory()
             browser.delegate = self
             self.browser = browser
             browser.searchForServices(ofType: "_hap._tcp.", inDomain: "local.")
-            timer = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(7)) } catch { return }
+            timer = Task { [weak self, timeout] in
+                do { try await Task.sleep(for: timeout) } catch { return }
                 self?.finish()
             }
         }
@@ -34,10 +41,15 @@ import LocalCore
         finish(error: AppFailure("Bonjour discovery could not start. Allow Local Network access for Ecobee Local in System Settings and retry."))
     }
     func netServiceDidResolveAddress(_ service: NetService) {
-        guard let txt = service.txtRecordData() else { return }
+        guard let device = Self.parse(service) else { return }
+        devices[device.id] = device
+        if device.id == soughtDeviceID { finish() }
+    }
+    static func parse(_ service: NetService) -> DiscoveredDevice? {
+        guard let txt = service.txtRecordData() else { return nil }
         let attributes = NetService.dictionary(fromTXTRecord: txt)
         func field(_ name: String) -> String { attributes[name].flatMap { String(data: $0, encoding: .utf8) } ?? "" }
-        guard !field("id").isEmpty, Int(field("ci")) == 9 || (field("md") + service.name).lowercased().contains("ecobee") else { return }
+        guard !field("id").isEmpty, Int(field("ci")) == 9 || (field("md") + service.name).lowercased().contains("ecobee") else { return nil }
         var addresses: [(Int32, String)] = []
         for data in service.addresses ?? [] {
             data.withUnsafeBytes { bytes in
@@ -50,15 +62,13 @@ import LocalCore
                 }
             }
         }
-        guard let address = addresses.first(where: { $0.0 == AF_INET })?.1 ?? addresses.first?.1 else { return }
+        guard let address = addresses.first(where: { $0.0 == AF_INET })?.1 ?? addresses.first?.1 else { return nil }
         let flags = Int(field("sf")) ?? 0
         let object: [String: Any] = ["id": field("id").lowercased(), "name": service.name, "model": field("md"),
             "address": address, "port": service.port, "available": flags & 1 != 0, "statusFlags": flags,
             "featureFlags": Int(field("ff")) ?? 0, "configNumber": Int(field("c#")) ?? 1]
-        if let data = try? JSONSerialization.data(withJSONObject: object), let device = try? JSONDecoder().decode(DiscoveredDevice.self, from: data) {
-            devices[device.id] = device
-            if device.id == soughtDeviceID { finish() }
-        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return try? JSONDecoder().decode(DiscoveredDevice.self, from: data)
     }
     private func finish(error: Error? = nil) {
         timer?.cancel(); timer = nil; browser?.stop(); browser?.delegate = nil; browser = nil

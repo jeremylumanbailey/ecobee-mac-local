@@ -7,7 +7,14 @@ struct AppFailure: LocalizedError {
 }
 
 /// Serial JSON RPC over anonymous pipes. No network listener and no secrets in argv or files.
-@MainActor final class HelperConnection {
+@MainActor final class HelperConnection: HelperRequesting {
+    private let executableURL: URL?
+    private let arguments: [String]
+    private let requestTimeout: Duration
+    var hasPendingRequest: Bool { pending != nil }
+    init(executableURL: URL? = nil, arguments: [String] = [], requestTimeout: Duration = .seconds(48)) {
+        self.executableURL = executableURL; self.arguments = arguments; self.requestTimeout = requestTimeout
+    }
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -20,7 +27,9 @@ struct AppFailure: LocalizedError {
         if process?.isRunning == true { return }
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/HAPHelper/HAPHelper")
         let task = Process()
-        if FileManager.default.isExecutableFile(atPath: bundled.path) {
+        if let executableURL {
+            task.executableURL = executableURL; task.arguments = arguments
+        } else if FileManager.default.isExecutableFile(atPath: bundled.path) {
             task.executableURL = bundled
         } else if let executable = ProcessInfo.processInfo.environment["ECOBEE_HELPER_PYTHON"],
                   let script = ProcessInfo.processInfo.environment["ECOBEE_HELPER_SCRIPT"] {
@@ -63,7 +72,7 @@ struct AppFailure: LocalizedError {
         return try await withCheckedThrowingContinuation { continuation in
             pending = (id, continuation)
             timeout = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(48)) } catch { return }
+                do { try await Task.sleep(for: self?.requestTimeout ?? .seconds(48)) } catch { return }
                 self?.failed("The thermostat request timed out. If you changed a setting, reconnect and check it before trying again.")
                 self?.stop()
             }

@@ -114,3 +114,31 @@ The bundled Python runtime has a macOS 26 minimum deployment version; the app's 
 - 79 Swift checks passed, including 13 new cache checks. ARM64 release build and strict ad-hoc signature verification passed; unchanged helper reused. Previous installed app preserved in work/Ecobee Local-before-startup-cache.app.
 - Initial updated build reconnected successfully, saved a version-1 snapshot with thermostat data and no occupancy values, and retained the existing fan run with the same end time. No thermostat-setting commands were sent. Connection completed before the UI observer captured an intermediate startup frame, so that observation does not independently verify the dimmed animation.
 - Final build (including fresh-data draft reset) installed and signature verified. Its relaunch is currently waiting for macOS Keychain approval; SecurityAgent was active and the protected prompt requires user input. Final relaunch confirmation is pending.
+
+## Expanded automated tests (October 3, 2026)
+
+- Before this change: 79 standalone Swift core checks and 33 Python helper unit tests; no automated AppModel/native-adapter suite or measured coverage report.
+- Added dependency injection for helper requests, Bonjour discovery, Keychain calls, preferences, and time. Production defaults retain the normal adapters; tests use synthetic data, isolated preference suites, and a fake helper process. Extracted draft-temperature command construction and control availability from the view into tested production logic.
+- 110 Swift core checks, 106 app/adapter checks, and 65 Python unit tests passed with `bash scripts/test.sh`. Coverage reports are generated under ignored `.build-app/tests/`; no new testing dependency or full Xcode installation is required. The Python environment must already contain the pinned helper dependencies.
+- App tests exercise cached startup before connection, reconnect success/failure and updated endpoints, pairing save/retry/removal failures, command serialization, disabled controls, uncertain writes without automatic retries, restored/expired fan deadlines, missing fan controls, delayed fan feedback, demo isolation, and diagnostic guards. Adapter tests cover discovery timeout/matching/deduplication/cleanup, Keychain query policy and errors, and pipe fragmentation/malformed messages/wrong IDs/oversized replies/concurrency/process exit/timeouts.
+- Python tests extend validation to helper startup/shutdown, discovery/pairing/reconnect, sensor inventory and error status, command dispatch, native-deadline safeguards, JSON request processing, error redaction, license collection, and DMG packaging/no-overwrite/failure cleanup. Signing and disk-image tools are stubbed for packaging tests; those tests do not certify a real disk image or Apple developer trust.
+- Found and fixed a sensor parsing inconsistency: temperature and occupancy readings carrying a HomeKit error status are now omitted rather than presented as fresh values. A regression test covers both readings.
+
+Measured line coverage for the instrumented code:
+
+| Scope | Line coverage |
+| --- | ---: |
+| Swift logic and adapters, combined | 94.26% |
+| AppModel | 91.00% |
+| BonjourDiscovery | 99.01% |
+| HelperConnection | 95.42% |
+| PairingStore adapter | 100% |
+| CachedHomeSnapshot, FanFeedback, FanRun, ThermostatCommands | 100% each |
+| LocalModels | 95.59% |
+| Python HAP helper | 99.7% |
+| Python license collector | 100% |
+
+These are line-coverage figures, not branch coverage or a guarantee of correctness. LLVM reports the Swift figures; Python uses standard-library tracing. The native adapters are tested with fake OS dependencies, so their percentages do not establish real Keychain authorization or network behavior. The Swift denominator excludes SwiftUI rendering and app entry (`ContentView.swift`, `EcobeeMacApp.swift`); background scheduling and bundled/environment helper-path selection remain integration concerns. The Python helper's direct process-entry line is outside the unit run; its main request loop is tested. Shell build scripts and icon artwork generation have no line-coverage measurement. UI layout, animations, accessibility, actual HomeKit behavior, and signing/notarization require separate integration/manual checks.
+
+- Rebuilt both the application and helper from current source. ARM64 architectures and strict ad-hoc signature verification passed, and the standalone bundled helper answered its hello handshake. Sandbox restrictions initially blocked `dsymutil`; the authorized build retry completed successfully.
+- Shell syntax and Git whitespace checks passed. The build is in `dist/Ecobee Local.app`; the running/installed app was not replaced. No live thermostat commands or real Keychain operations were performed by this test run.

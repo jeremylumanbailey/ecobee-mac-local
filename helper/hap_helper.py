@@ -61,8 +61,10 @@ def parse_accessories(accessories):
                         item["fields"][field] = meta
                 thermostats.append(item)
             elif uuid(service["type"]) in {uuid("8A"), uuid("86")}:
-                temperature = (by_type(service, "11") or {}).get("value")
-                occupancy = (by_type(service, "71") or {}).get("value")
+                temperature_field = by_type(service, "11") or {}
+                occupancy_field = by_type(service, "71") or {}
+                temperature = temperature_field.get("value") if temperature_field.get("status", 0) == 0 else None
+                occupancy = occupancy_field.get("value") if occupancy_field.get("status", 0) == 0 else None
                 sensor = next((s for s in sensors if s["id"] == str(aid)), None)
                 if sensor is None:
                     sensor = {"id": str(aid), "name": name}

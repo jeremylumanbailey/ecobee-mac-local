@@ -150,4 +150,50 @@ sampleJSON["thermostats"] = []
 let emptySnapshot = try JSONDecoder().decode(HomeSnapshot.self, from: JSONSerialization.data(withJSONObject: sampleJSON))
 let emptyData = try JSONEncoder().encode(CachedHomeSnapshot(snapshot: emptySnapshot, accessoryID: "test-pairing", savedAt: now))
 check(CachedHomeSnapshot.restore(emptyData, accessoryID: "test-pairing", now: now) == nil, "Empty thermostat cache is discarded")
+let editThermostat = PreviewData.snapshot.thermostats[0]
+let unchanged = try ThermostatCommands.changes(for: editThermostat, mode: 3, target: 22, heat: 20, cool: 24)
+check(unchanged.isEmpty, "Unchanged draft generates no command")
+let offChanges = try ThermostatCommands.changes(for: editThermostat, mode: 0, target: 25, heat: 21, cool: 26)
+check(offChanges == ["mode": 0], "Switching Off never sends temperature drafts")
+let coolChanges = try ThermostatCommands.changes(for: editThermostat, mode: 2, target: 23.24, heat: 20, cool: 24)
+check(coolChanges == ["mode": 2, "target": 23.2], "Cooling changes include quantized target and mode only")
+let autoChanges = try ThermostatCommands.changes(for: editThermostat, mode: 3, target: 28, heat: 21, cool: 25)
+check(autoChanges == ["heat": 21, "cool": 25], "Auto mode writes thresholds instead of target")
+do {
+    _ = try ThermostatCommands.changes(for: editThermostat, mode: 3, target: 22, heat: 25, cool: 24)
+    fatalError("Crossed threshold should fail")
+} catch { check(error.localizedDescription.contains("below"), "Crossed draft thresholds fail before sending") }
+let adjustmentField = editThermostat.fields["target"]!
+check(ThermostatCommands.adjusted(32, direction: 1, unit: .celsius, metadata: adjustmentField) == 32, "Temperature increment clamps to device maximum")
+check(ThermostatCommands.adjusted(7, direction: -1, unit: .celsius, metadata: adjustmentField) == 7, "Temperature decrement clamps to device minimum")
+check(ThermostatCommands.adjusted(20, direction: 1, unit: .celsius, metadata: adjustmentField) == 20.5, "Celsius draft step is half a degree")
+check(ThermostatCommands.adjusted(20, direction: 1, unit: .fahrenheit, metadata: adjustmentField) == 20.6, "Fahrenheit draft step converts and quantizes")
+for duration in FanRunDuration.allCases { check(!duration.title.isEmpty && duration.id == duration.rawValue, "Duration label and identifier: \(duration.rawValue)") }
+check(DisplayUnit.celsius.symbol == "°C" && DisplayUnit.fahrenheit.symbol == "°F", "Display units have correct labels")
+var limitedJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(editThermostat)) as! [String: Any]
+limitedJSON["fields"] = [:]
+let unsupported = try JSONDecoder().decode(LocalThermostat.self, from: JSONSerialization.data(withJSONObject: limitedJSON))
+check(unsupported.allowedModes.isEmpty, "Missing mode capability has no allowed selections")
+let unsupportedChanges = try ThermostatCommands.changes(for: unsupported, mode: 3, target: 25, heat: 21, cool: 25)
+check(unsupportedChanges.isEmpty, "Missing temperature controls cannot generate draft writes")
+check(DisplayUnit.celsius.id == "celsius" && DisplayUnit.fahrenheit.id == "fahrenheit", "Unit picker identities remain stable")
+check(DisplayUnit.fahrenheit.text(20) == "68°" && DisplayUnit.celsius.text(20) == "20°", "Live readings format in the selected unit")
+for (mode, state, name, status) in [(0.0, 0.0, "Off", "Idle"), (1, 1, "Heat", "Heating"), (2, 2, "Cool", "Cooling"), (3, 99, "Auto", "Unknown")] {
+    thermostat.mode = mode; thermostat.state = state
+    check(thermostat.modeName == name && thermostat.stateName == status, "Mode and state labels: \(name)")
+}
+thermostat.mode = nil; thermostat.state = nil
+check(thermostat.modeName == "Unknown" && thermostat.stateName == "Unknown", "Missing mode and state have honest labels")
+for action in [FanFeedback.Action.start, .stop] {
+    for accepted in [false, true] {
+        var feedback = FanFeedback(thermostatID: "fixture", action: action)
+        feedback.completeRequest(accepted: accepted, now: now)
+        feedback.expire(at: now.addingTimeInterval(31))
+        let prefix = action == .start ? (accepted ? "Fan On requested." : "Fan On could not be confirmed.") : (accepted ? "Auto requested." : "Stop could not be confirmed.")
+        check(feedback.message.hasPrefix(prefix), "Unconfirmed fan message distinguishes write acceptance and action")
+    }
+}
+let unrestricted = try JSONDecoder().decode(ControlMetadata.self, from: Data(#"{"aid":1,"iid":4,"format":"float"}"#.utf8))
+check(ThermostatCommands.adjusted(35, direction: 1, unit: .celsius, metadata: unrestricted) == 35, "Missing metadata still enforces app temperature ceiling")
+check(ThermostatCommands.adjusted(4, direction: -1, unit: .celsius, metadata: unrestricted) == 4, "Missing metadata still enforces app temperature floor")
 print("\(checks) Swift checks passed.")

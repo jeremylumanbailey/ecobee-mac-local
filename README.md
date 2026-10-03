@@ -50,13 +50,20 @@ Prerequisites for rebuilding: Apple command-line Swift tools, Python 3.14, and i
 
 ```sh
 bash scripts/build-app.sh
-swift run LocalCoreChecks
-.build-app/venv/bin/python -m unittest discover -s Tests/HelperTests -v
+bash scripts/test.sh
 ```
 
-Run these commands from the repository root. The build produces `dist/Ecobee Local.app`; temporary build files and its Python environment stay under `.build-app/`. If using `ECOBEE_BUILD_PYTHON`, run the Python tests with that interpreter instead. For the same SDK used by the build script, pass `--sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` to `swift run` on Macs with that SDK installed.
+Run these commands from the repository root. The build produces `dist/Ecobee Local.app`; temporary build files and its Python environment stay under `.build-app/`. The test runner uses that Python environment, or `ECOBEE_TEST_PYTHON` / `ECOBEE_BUILD_PYTHON` if set. It adds no test dependencies. You can run tests without rebuilding the app once the pinned helper dependencies are installed.
 
 The Swift checks are a standalone executable so they also run with Command Line Tools, which do not include XCTest. `ECOBEE_BUILD_ROOT`, `ECOBEE_BUILD_PYTHON`, and `ECOBEE_APP_OUTPUT` can customize build paths. The build prefers the installed macOS 26.5 SDK; `ECOBEE_SDK` overrides it. This avoids a missing SwiftUI macro plugin in the installed macOS 27 Command Line Tools. For `swift run EcobeeMac`, set `ECOBEE_HELPER_PYTHON` and `ECOBEE_HELPER_SCRIPT` to absolute paths for the helper runtime and source file.
+
+### Automated test coverage
+
+`bash scripts/test.sh` runs the LocalCore checks, app/adapter checks, and Python unit tests, and exits nonzero on failure. Swift tests use production sources compiled with coverage instrumentation. Reports are written beneath the ignored `.build-app/tests/` directory; `latest-coverage-path.txt` identifies the most recent successful run. Open its `swift-html/index.html` for line-by-line Swift coverage, `swift-summary.txt` for totals, and `python/` for annotated Python source (`>>>>>>` marks unexecuted lines). Python uses standard-library line tracing and prints a summary in `python-summary.txt`.
+
+The tests cover temperature commands, cached startup, control availability, pairing persistence failures, reconnects, fan deadlines and feedback, Bonjour discovery, pipe protocol failures, helper command validation, and packaging safeguards. Test fixtures replace Keychain, discovery, thermostat communication, clock, and app preferences. Pipe tests run a synthetic helper; packaging tests stub signing and disk-image tools. No test pairs with or sends commands to a real thermostat, accesses saved pairing keys, or changes normal app preferences.
+
+Coverage is **not 100% of the entire application**. The Swift report covers `LocalCore`, `AppModel`, and the native adapters; it excludes `ContentView.swift` and `EcobeeMacApp.swift` (SwiftUI rendering and app entry). Draft-temperature logic and control gating have been extracted into tested production code. Background task scheduling, actual Keychain authorization, real Bonjour/HomeKit communication, UI animations/accessibility, and Apple signing/notarization still need integration or manual validation. The build script is checked by building the ARM64 app; shell scripts do not have line-coverage percentages. See `TEST-RESULTS.md` for measured results and remaining limitations.
 
 This build is locally ad-hoc signed, not notarized for public distribution. Developer ID signing/notarization is separate from HomeKit pairing and is not needed for the local build workflow.
 

@@ -275,7 +275,7 @@ private struct ThermostatCard: View {
     @State<Double> private var heat = 20.0
     @State<Double> private var cool = 24.0
     @State<Bool> private var edited = false
-    var canControl: Bool { !model.busy && (model.connected || model.demo) && !model.hasUnsavedPairing }
+    var canControl: Bool { model.canControl }
     var body: some View {
         VStack(spacing: 24) {
             HStack {
@@ -359,10 +359,7 @@ private struct ThermostatCard: View {
     }
     private func adjust(_ binding: Binding<Double>, by direction: Double, field: String) {
         guard let meta = thermostat.fields[field] else { return }
-        let display = model.unit.fromCelsius(binding.wrappedValue)
-        let increment = model.unit == .celsius ? 0.5 : 1.0
-        let raw = model.unit.toCelsius(display + direction * increment)
-        binding.wrappedValue = min(max(meta.quantized(raw), max(meta.minimum ?? 4, 4)), min(meta.maximum ?? 35, 35))
+        binding.wrappedValue = ThermostatCommands.adjusted(binding.wrappedValue, direction: direction, unit: model.unit, metadata: meta)
         edited = true
     }
     private func sync() {
@@ -371,14 +368,11 @@ private struct ThermostatCard: View {
         heat = latest.heat ?? 20; cool = latest.cool ?? 24; edited = false
     }
     private func apply() {
-        var changes: [String: Any] = [:]
-        if Double(mode) != thermostat.mode { changes["mode"] = Double(mode) }
-        if mode == 3 {
-            if let meta = thermostat.fields["heat"], heat != thermostat.heat { changes["heat"] = meta.quantized(heat) }
-            if let meta = thermostat.fields["cool"], cool != thermostat.cool { changes["cool"] = meta.quantized(cool) }
-        } else if mode != 0, let meta = thermostat.fields["target"], target != thermostat.target { changes["target"] = meta.quantized(target) }
+        let changes: [String: Double]
+        do {
+            changes = try ThermostatCommands.changes(for: thermostat, mode: mode, target: target, heat: heat, cool: cool)
+        } catch { model.error = error.localizedDescription; return }
         guard !changes.isEmpty else { edited = false; return }
-        if mode == 3 && heat >= cool { model.error = "The heating target must be below the cooling target."; return }
         Task {
             await model.write(changes, thermostat: thermostat)
             if model.error == nil { edited = false; sync() }

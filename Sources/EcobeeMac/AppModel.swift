@@ -16,6 +16,7 @@ import LocalCore
     @Published var didSearch = false
     @Published var connected = false
     @Published private(set) var connectionStage: String? = "Preparing your thermostat…"
+    var canControl: Bool { !busy && (connected || demo) && !hasUnsavedPairing }
     var isConnecting: Bool { connectionStage != nil }
     @Published var timerTrialMessage: String?
     private var inspectedHoldEnd: String?
@@ -24,11 +25,26 @@ import LocalCore
     @Published private(set) var fanRun: FanRun?
     @Published private(set) var fanFeedback: FanFeedback?
     private var nextFanFeedbackRead = Date.distantPast
-    @AppStorage("temperatureUnit") var unitRaw = DisplayUnit.fahrenheit.rawValue
+    @Published var unitRaw: String { didSet { preferences.set(unitRaw, forKey: "temperatureUnit") } }
     var unit: DisplayUnit { DisplayUnit(rawValue: unitRaw) ?? .fahrenheit }
-    let helper = HelperConnection()
-    private let discovery = BonjourDiscovery()
-    private let store = PairingStore()
+    let helper: any HelperRequesting
+    private let discovery: any ThermostatDiscovering
+    private let store: any PairingStoring
+    private let preferences: UserDefaults
+    private let now: () -> Date
+    private let automaticTasks: Bool
+    private let arguments: [String]
+
+    init(helper: (any HelperRequesting)? = nil, discovery: (any ThermostatDiscovering)? = nil,
+         store: any PairingStoring = PairingStore(), preferences: UserDefaults = .standard,
+         now: @escaping () -> Date = { Date() }, automaticTasks: Bool = true,
+         arguments: [String] = ProcessInfo.processInfo.arguments) {
+        self.helper = helper ?? HelperConnection()
+        self.discovery = discovery ?? BonjourDiscovery()
+        self.store = store; self.preferences = preferences; self.now = now
+        self.automaticTasks = automaticTasks; self.arguments = arguments
+        unitRaw = preferences.string(forKey: "temperatureUnit") ?? DisplayUnit.fahrenheit.rawValue
+    }
     private var pairingData: Data?
     private var started = false
     private var pollTask: Task<Void, Never>?
@@ -46,21 +62,22 @@ import LocalCore
     func start() async {
         guard !started else { return }; started = true
         defer { connectionStage = nil }
-        if ProcessInfo.processInfo.arguments.contains("--demo") { showDemo() }
+        if arguments.contains("--demo") { showDemo() }
         else {
             do {
                 connectionStage = "Loading saved pairing…"
                 pairingData = try store.load()
                 paired = pairingData != nil
-                if let data = UserDefaults.standard.data(forKey: fanRunKey),
+                if let data = preferences.data(forKey: fanRunKey),
                    let saved = try? JSONDecoder().decode(FanRun.self, from: data),
                    saved.accessoryID == accessoryID { fanRun = saved }
                 if paired {
                     restoreSnapshot()
                     await reconnect()
-                } else { UserDefaults.standard.removeObject(forKey: snapshotCacheKey) }
+                } else { preferences.removeObject(forKey: snapshotCacheKey) }
             } catch { self.error = error.localizedDescription }
         }
+        guard automaticTasks else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(20)) } catch { return }
@@ -139,7 +156,7 @@ import LocalCore
         }
     }
     func refresh() async {
-        if demo { lastUpdated = Date(); return }
+        if demo { lastUpdated = now(); return }
         await perform {
             do { try accept(await helper.request("refresh")) }
             catch { connected = false; throw error }
@@ -162,7 +179,7 @@ import LocalCore
                 }
                 if changes["resume"] as? Bool == true { snapshot = PreviewData.snapshot }
                 accepted = true
-                lastUpdated = Date(); notice = "Demo updated. No real thermostat was changed."
+                lastUpdated = now(); notice = "Demo updated. No real thermostat was changed."
                 return
             }
             guard connected else { throw AppFailure("Reconnect before changing the thermostat.") }
@@ -186,7 +203,7 @@ import LocalCore
         }
         fanFeedback = FanFeedback(thermostatID: thermostat.id, action: on ? .start : .stop)
         if on {
-            fanRun = duration == .continuous ? nil : FanRun(accessoryID: accessoryID, thermostatID: thermostat.id, duration: duration)
+            fanRun = duration == .continuous ? nil : FanRun(accessoryID: accessoryID, thermostatID: thermostat.id, duration: duration, now: now())
         } else {
             fanRun?.markReturnAttempted()
         }
@@ -200,9 +217,9 @@ import LocalCore
         persistFanRun()
     }
 
-    private func finishFanRunIfDue() async {
+    func finishFanRunIfDue() async {
         guard var run = fanRun, let accessoryID,
-              run.claimReturn(at: Date(), accessoryID: accessoryID, connected: connected || demo, busy: busy || hasUnsavedPairing)
+              run.claimReturn(at: now(), accessoryID: accessoryID, connected: connected || demo, busy: busy || hasUnsavedPairing)
         else { return }
         fanRun = run; persistFanRun()
         guard let thermostat = snapshot?.thermostats.first(where: { $0.id == run.thermostatID }), thermostat.fields["fan"] != nil else {
@@ -217,10 +234,10 @@ import LocalCore
     }
 
     private func completeFanRequest(accepted: Bool) {
-        fanFeedback?.completeRequest(accepted: accepted, now: Date())
+        fanFeedback?.completeRequest(accepted: accepted, now: now())
         if connected || demo { updateFanFeedbackReading() }
         else { fanFeedback?.connectionLost() }
-        nextFanFeedbackRead = Date().addingTimeInterval(2)
+        nextFanFeedbackRead = now().addingTimeInterval(2)
         // The inline feedback owns the outcome; avoid a second, prematurely final notice.
         if accepted && (connected || demo) { notice = nil }
     }
@@ -229,18 +246,18 @@ import LocalCore
         guard let feedback = fanFeedback else { return }
         let thermostat = snapshot?.thermostats.first { $0.id == feedback.thermostatID }
         fanFeedback?.observe(mode: thermostat?.fan,
-                                 running: thermostat?.fanRunning, now: Date())
+                                 running: thermostat?.fanRunning, now: now())
     }
 
     /// Called by the one-second clock, so even an in-flight read cannot leave the spinner stuck.
-    private func checkFanFeedback() {
+    func checkFanFeedback() {
         guard connected || demo else { fanFeedback?.connectionLost(); return }
         let wasWaiting = fanFeedback?.phase == .waiting
-        fanFeedback?.expire(at: Date())
+        fanFeedback?.expire(at: now())
         if wasWaiting && fanFeedback?.isPending == false { updateFanFeedbackReading() }
         guard fanFeedback?.isPending == true else { return }
-        guard !busy, Date() >= nextFanFeedbackRead, !demo, let id = fanFeedback?.id else { return }
-        nextFanFeedbackRead = Date().addingTimeInterval(2)
+        guard !busy, now() >= nextFanFeedbackRead, !demo, let id = fanFeedback?.id else { return }
+        nextFanFeedbackRead = now().addingTimeInterval(2)
         busy = true
         Task { [weak self] in
             guard let self else { return }
@@ -260,8 +277,8 @@ import LocalCore
     private func persistFanRun() {
         guard !demo else { return }
         if let fanRun, let data = try? JSONEncoder().encode(fanRun) {
-            UserDefaults.standard.set(data, forKey: fanRunKey)
-        } else { UserDefaults.standard.removeObject(forKey: fanRunKey) }
+            preferences.set(data, forKey: fanRunKey)
+        } else { preferences.removeObject(forKey: fanRunKey) }
     }
 
     func inspectFanTimer() async {
@@ -312,7 +329,7 @@ import LocalCore
             try store.delete()
             helper.stop(); pairingData = nil; paired = false; connected = false
             fanFeedback = nil
-            UserDefaults.standard.removeObject(forKey: snapshotCacheKey)
+            preferences.removeObject(forKey: snapshotCacheKey)
             snapshot = nil; lastUpdated = nil; devices = []; didSearch = false
             notice = "Pairing removed from the thermostat and this Mac."
         }
@@ -321,7 +338,7 @@ import LocalCore
         guard !busy, !paired else { return }
         connectionStage = nil
         demo = true; connected = false; error = nil; notice = nil
-        snapshot = PreviewData.snapshot; lastUpdated = Date()
+        snapshot = PreviewData.snapshot; lastUpdated = now()
     }
     func exitDemo() {
         fanRun = nil; fanFeedback = nil
@@ -330,18 +347,18 @@ import LocalCore
     private func accept(_ result: [String: Any]) throws {
         guard let value = result["snapshot"] else { throw AppFailure("The thermostat returned no readings.") }
         snapshot = try decode(HomeSnapshot.self, value)
-        lastUpdated = Date(); connected = true
+        lastUpdated = now(); connected = true
         updateFanFeedbackReading()
         if !demo, !hasUnsavedPairing, let accessoryID, let snapshot, let lastUpdated,
            let data = try? JSONEncoder().encode(CachedHomeSnapshot(snapshot: snapshot, accessoryID: accessoryID, savedAt: lastUpdated)),
            data.count <= 512_000 {
-            UserDefaults.standard.set(data, forKey: snapshotCacheKey)
+            preferences.set(data, forKey: snapshotCacheKey)
         }
     }
     private func restoreSnapshot() {
-        guard let accessoryID, let data = UserDefaults.standard.data(forKey: snapshotCacheKey) else { return }
-        guard let cached = CachedHomeSnapshot.restore(data, accessoryID: accessoryID) else {
-            UserDefaults.standard.removeObject(forKey: snapshotCacheKey); return
+        guard let accessoryID, let data = preferences.data(forKey: snapshotCacheKey) else { return }
+        guard let cached = CachedHomeSnapshot.restore(data, accessoryID: accessoryID, now: now()) else {
+            preferences.removeObject(forKey: snapshotCacheKey); return
         }
         snapshot = cached.snapshot
         lastUpdated = cached.savedAt

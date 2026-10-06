@@ -2,6 +2,21 @@
 
 A native SwiftUI Mac app with an ARM64 local HomeKit helper. Built for a Smart Thermostat Essential; actual capability detection is performed after pairing. The bundled app requires macOS 26 or later on Apple Silicon because of its included Python runtime. This is an independent personal-use prototype, not an ecobee product.
 
+## Download and install
+
+**[Download Ecobee Local 0.1.0 for Apple Silicon (.dmg)](https://github.com/jeremylumanbailey/ecobee-mac-local/releases/download/v0.1.0-testing/Ecobee-Local-0.1.0-arm64.dmg)** · [Release notes and SHA-256 checksum](https://github.com/jeremylumanbailey/ecobee-mac-local/releases/tag/v0.1.0-testing)
+
+Requires **macOS 26 or later and an Apple Silicon Mac (M1 or later)**, plus a compatible Ecobee thermostat on the same local network. Tested with Smart Thermostat Essential. The download includes the Python runtime and connection helper: **no compiling, developer tools, API key, or iPhone required**. GitHub's “Source code” archives are for developers; choose the `.dmg` asset to install the app.
+
+1. Download and open the `.dmg`.
+2. Drag **Ecobee Local.app** onto **Applications**, then eject the disk image.
+3. Open the app from Applications and allow Local Network access if prompted.
+4. Follow [Connect](#connect) below to pair your own thermostat using its HomeKit setup code. Your pairing stays in your Mac's Keychain.
+
+**Testing release:** this build is ad-hoc signed and has not been notarized by Apple. macOS may block its first launch. If you trust the downloaded app, Apple's supported process may offer **System Settings → Privacy & Security → Open Anyway** after the first launch attempt. See [Apple's instructions](https://support.apple.com/102445); availability can depend on your Mac's policy. Do not disable Gatekeeper. Normal installation under standard Gatekeeper checks will require a future Developer ID signed and notarized release.
+
+**Timed fan runs require the app to remain open and the Mac awake on the home network.** Other Ecobee models are not yet live-tested; available controls depend on the characteristics their firmware exposes.
+
 ![Screenshot](<image.png>)
 
 ## Connect
